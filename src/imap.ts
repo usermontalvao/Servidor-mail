@@ -157,8 +157,10 @@ async function discoverTargets(): Promise<Target[]> {
     for (const b of boxes) {
       const su = String((b as { specialUse?: string }).specialUse ?? '').toLowerCase();
       const path = b.path;
-      const looksJunk = su === '\\junk' || /(^|[./])(junk|spam)([./]|$)/i.test(path);
-      const looksTrash = su === '\\trash' || /(^|[./])(trash|deleted|lixeira)([./]|$)/i.test(path);
+      // \b(junk|spam)\b casa Junk, Spam, INBOX.Junk, "Junk E-mail" — mesmo critério
+      // do trigger fn_classify_email_spam (\m\M), p/ não divergir.
+      const looksJunk = su === '\\junk' || /\b(junk|spam)\b/i.test(path);
+      const looksTrash = su === '\\trash' || /\b(trash|deleted|lixeira)\b/i.test(path);
       if (looksJunk) targets.set(path, true);
       else if (looksTrash && config.imap.includeTrash) targets.set(path, true);
     }

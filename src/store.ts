@@ -24,6 +24,22 @@ function authSummary(t: string): string {
 // Vereditos determinísticos do trigger que a IA NÃO deve sobrescrever.
 const HARD_REASON = /whitelist|sinalizado como spam|bloqueado|regra de bloqueio/i;
 
+/**
+ * Remove a notificação de "novo e-mail" (sino) de um e-mail que acabou de virar
+ * spam. Usado quando a decisão de spam é tomada DEPOIS do insert (ex.: IA) — aí o
+ * trigger de notificação já criou a notificação e precisamos apagá-la para que
+ * spam não fique pendente no sino. (Spam decidido ANTES do insert — pasta do
+ * servidor / regras / heurística — nem chega a notificar.)
+ */
+async function deleteEmailNotifications(emailId: string): Promise<void> {
+  const { error } = await supabase
+    .from('user_notifications')
+    .delete()
+    .eq('type', 'email_new')
+    .filter('metadata->>email_id', 'eq', emailId);
+  if (error) logger.warn({ err: error, emailId }, 'falha ao remover notificação de e-mail spam');
+}
+
 function addrText(a?: AddressObject | AddressObject[]): string | null {
   if (!a) return null;
   const arr = Array.isArray(a) ? a : [a];
@@ -130,26 +146,36 @@ export async function storeIncoming(
 
   const isHard = HARD_REASON.test(inserted?.spam_reason ?? '');
 
-  // Veio da pasta de Spam/Junk DO SERVIDOR: espelha a classificação — marca como
-  // spam no CRM (a não ser que haja veredito duro, ex.: remetente na whitelist).
-  // Não roda IA: o provedor já decidiu, e re-classificar poderia "des-spammar".
-  if (fromSpamFolder && inserted && !isHard) {
-    const { error: upErr } = await supabase
-      .from('email_messages')
-      .update({
-        is_spam: true,
-        spam_score: 1,
-        spam_reason: 'Marcado como spam pelo servidor de e-mail',
-        spam_checked: true,
-      })
-      .eq('id', inserted.id);
-    if (upErr) logger.warn({ err: upErr, id: inserted.id }, 'spam-folder: falha ao marcar spam');
-    else logger.info({ id: inserted.id }, 'spam-folder: marcado como spam (espelho do servidor)');
+  // Veio da pasta de Spam/Junk DO SERVIDOR: o trigger fn_classify_email_spam já
+  // marcou is_spam ANTES do insert (pela coluna mailbox), então a notificação
+  // nem foi criada. Aqui só pulamos a IA (o provedor já decidiu). Defesa: se por
+  // algum motivo o trigger não marcou (ex.: nome de pasta fora do padrão) e não
+  // há veredito duro, marca agora e remove a notificação que possa ter surgido.
+  if (fromSpamFolder && inserted) {
+    if (!inserted.is_spam && !isHard) {
+      const { error: upErr } = await supabase
+        .from('email_messages')
+        .update({
+          is_spam: true,
+          spam_score: 1,
+          spam_reason: 'Marcado como spam pelo servidor de e-mail',
+          spam_checked: true,
+        })
+        .eq('id', inserted.id);
+      if (upErr) logger.warn({ err: upErr, id: inserted.id }, 'spam-folder: falha ao marcar spam');
+      else {
+        await deleteEmailNotifications(inserted.id);
+        logger.info({ id: inserted.id }, 'spam-folder: marcado como spam + notificação removida');
+      }
+    }
     return true;
   }
 
-  // Refino por IA (DeepSeek): só em casos ambíguos — whitelist/blocklist já decidem.
-  if (config.spamAi.enabled && inserted && !isHard) {
+  // Refino por IA (DeepSeek): SÓ em casos realmente ambíguos. Não gasta token com
+  // quem já tem veredito: whitelist/blocklist (isHard) NEM e-mail já classificado
+  // como spam (heurística/regra/pasta) — `inserted.is_spam`. Sobra só o que está
+  // sem decisão (is_spam=false e sem regra dura).
+  if (config.spamAi.enabled && inserted && !isHard && !inserted.is_spam) {
     const auth = authSummary(authText(row.raw_headers as Record<string, unknown>));
     const verdict = await classifyWithAi({
       from: fromAddress,
@@ -168,7 +194,12 @@ export async function storeIncoming(
         })
         .eq('id', inserted.id);
       if (upErr) logger.warn({ err: upErr, id: inserted.id }, 'spam-ai: falha ao gravar veredito');
-      else logger.info({ id: inserted.id, isSpam: verdict.isSpam, score: verdict.score }, 'spam-ai: classificado');
+      else {
+        // A IA decidiu DEPOIS do insert: se virou spam, a notificação já foi
+        // criada pelo trigger — remove para não pingar spam no sino.
+        if (verdict.isSpam) await deleteEmailNotifications(inserted.id);
+        logger.info({ id: inserted.id, isSpam: verdict.isSpam, score: verdict.score }, 'spam-ai: classificado');
+      }
     }
   }
 
