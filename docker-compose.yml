@@ -8,9 +8,11 @@ services:
     container_name: email-bridge
     restart: unless-stopped
     ports:
-      # Porta HTTP interna para o CRM/edge function chamar o envio de email.
-      # Exponha so na rede interna / atras de proxy. Ajuste conforme necessario.
-      - "8080:8080"
+      # host:container -> a porta do HOST (8084) e a que o Cloudflare Tunnel aponta.
+      # Portas ja em uso no host: 9000 (portainer), 8080 (evolution), 8082 (typebot), 8083 (bot).
+      # Rota sugerida no tunnel: email.jurius-api.com -> http://localhost:8084
+      # A porta INTERNA do container continua 8080 (sem conflito dentro do container).
+      - "${HOST_PORT:-8084}:8080"
     environment:
       # --- HTTP / seguranca da API de envio ---
       PORT: 8080

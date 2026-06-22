@@ -29,6 +29,18 @@ Hostinger  --IMAP IDLE-->  email-bridge ----+---> Supabase (email_messages + Sto
    (segredos ficam só aqui, nunca no repo).
 4. Deploy. Para atualizar: `git push` + redeploy (ou ative o webhook do Portainer).
 
+## Acesso via Cloudflare Tunnel
+
+O container publica no host na porta **`HOST_PORT`** (padrão `8084`; evite 9000/8080/8082/8083
+que já estão em uso). Adicione uma rota no tunnel:
+
+```
+email.jurius-api.com  ->  http://localhost:8084
+```
+
+A `/send` exige `Authorization: Bearer <BRIDGE_API_TOKEN>`, então é seguro expor publicamente.
+O recebimento IMAP é uma conexão de SAÍDA do container — não precisa de rota de entrada.
+
 ## Banco
 
 Rode `sql/001_email_schema.sql` no Supabase e crie o bucket privado
@@ -37,7 +49,7 @@ Rode `sql/001_email_schema.sql` no Supabase e crie o bucket privado
 ## Enviar email (do CRM / edge function)
 
 ```http
-POST http://email-bridge:8080/send
+POST https://email.jurius-api.com/send
 Authorization: Bearer <BRIDGE_API_TOKEN>
 Content-Type: application/json
 
