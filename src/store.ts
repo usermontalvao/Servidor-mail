@@ -2,6 +2,27 @@ import type { ParsedMail, AddressObject } from 'mailparser';
 import { supabase } from './supabase.js';
 import { config } from './config.js';
 import { logger } from './logger.js';
+import { classifyWithAi } from './spamAi.js';
+
+/** Junta authentication-results + arc-authentication-results (pode ser array) em texto. */
+function authText(headers: Record<string, unknown>): string {
+  const toStr = (v: unknown): string =>
+    Array.isArray(v) ? v.map((x) => String(x)).join(' ') : typeof v === 'string' ? v : '';
+  return (toStr(headers['authentication-results']) + ' ' + toStr(headers['arc-authentication-results'])).toLowerCase();
+}
+
+/** Resume SPF/DKIM/DMARC a partir do texto de autenticação. */
+function authSummary(t: string): string {
+  const out: string[] = [];
+  for (const k of ['spf', 'dkim', 'dmarc']) {
+    const m = t.match(new RegExp(`${k}=(\\w+)`));
+    if (m) out.push(`${k}=${m[1]}`);
+  }
+  return out.join(' ');
+}
+
+// Vereditos determinísticos do trigger que a IA NÃO deve sobrescrever.
+const HARD_REASON = /whitelist|sinalizado como spam|bloqueado|regra de bloqueio/i;
 
 function addrText(a?: AddressObject | AddressObject[]): string | null {
   if (!a) return null;
@@ -85,7 +106,11 @@ export async function storeIncoming(parsed: ParsedMail, uid: number): Promise<bo
     raw_headers: Object.fromEntries(parsed.headers as Map<string, unknown>),
   };
 
-  const { error } = await supabase.from('email_messages').insert(row);
+  const { data: inserted, error } = await supabase
+    .from('email_messages')
+    .insert(row)
+    .select('id, is_spam, spam_reason')
+    .single();
   if (error) {
     // 23505 = unique violation (corrida entre processos) -> trata como ja existente
     if ((error as { code?: string }).code === '23505') {
@@ -96,6 +121,31 @@ export async function storeIncoming(parsed: ParsedMail, uid: number): Promise<bo
   }
 
   logger.info({ messageId, from: fromAddress, subject: row.subject }, 'email recebido gravado');
+
+  // Refino por IA (DeepSeek): só em casos ambíguos — whitelist/blocklist já decidem.
+  if (config.spamAi.enabled && inserted && !HARD_REASON.test(inserted.spam_reason ?? '')) {
+    const auth = authSummary(authText(row.raw_headers as Record<string, unknown>));
+    const verdict = await classifyWithAi({
+      from: fromAddress,
+      subject: row.subject,
+      bodyText: row.body_text,
+      authSummary: auth,
+    });
+    if (verdict) {
+      const { error: upErr } = await supabase
+        .from('email_messages')
+        .update({
+          is_spam: verdict.isSpam,
+          spam_score: verdict.score,
+          spam_reason: `IA: ${verdict.reason}`,
+          spam_checked: true,
+        })
+        .eq('id', inserted.id);
+      if (upErr) logger.warn({ err: upErr, id: inserted.id }, 'spam-ai: falha ao gravar veredito');
+      else logger.info({ id: inserted.id, isSpam: verdict.isSpam, score: verdict.score }, 'spam-ai: classificado');
+    }
+  }
+
   return true;
 }
 

@@ -6,7 +6,7 @@ services:
     build: .
     # Tag versionada: ao mudar a tag, o compose e OBRIGADO a rebuildar
     # (evita o Portainer reusar imagem antiga em cache). Suba a versao a cada mudanca de imagem.
-    image: email-bridge:node22-v2
+    image: email-bridge:node22-v3
     container_name: email-bridge
     restart: unless-stopped
     ports:

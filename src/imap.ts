@@ -20,7 +20,13 @@ async function loadState(): Promise<SyncState> {
     .select('uid_validity, last_uid')
     .eq('mailbox', config.imap.mailbox)
     .maybeSingle();
-  if (error) logger.error({ err: error }, 'falha ao ler email_sync_state');
+  if (error) {
+    // NÃO cair para {0,0} aqui: uidValidity=0 faz o syncByUid varrer a caixa
+    // INTEIRA (from=1, ~milhares de msgs) a cada falha transitória de leitura.
+    // Aborta o ciclo preservando o watermark; o próximo resync tenta de novo.
+    logger.error({ err: error }, 'falha ao ler email_sync_state — abortando ciclo de sync');
+    throw new Error(`loadState falhou: ${error.message}`);
+  }
   return {
     uidValidity: Number(data?.uid_validity ?? 0),
     lastUid: Number(data?.last_uid ?? 0),
@@ -131,6 +137,18 @@ export async function startImap(): Promise<void> {
         logger.error({ err }, 'falha ao processar novas mensagens'),
       );
     });
+
+    // 3) rede de segurança: alguns servidores IMAP param de emitir IDLE de forma
+    // confiável, ou o socket vira zumbi (sem evento 'close'), e a ponte fica
+    // parada sem perceber. Reconcilia periodicamente — limita a latência máxima
+    // de um email novo a config.imap.pollIntervalMs. Limpa o timer ao desconectar.
+    const resync = setInterval(() => {
+      if (!client || stopping) return;
+      syncByUid(client).catch((err) =>
+        logger.error({ err }, 'falha no resync periódico'),
+      );
+    }, config.imap.pollIntervalMs);
+    client.on('close', () => clearInterval(resync));
   };
 
   const loop = async (): Promise<void> => {

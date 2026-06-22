@@ -33,6 +33,10 @@ export const config = {
     user: req('IMAP_USER'),
     password: req('IMAP_PASSWORD'),
     mailbox: process.env.IMAP_MAILBOX ?? 'INBOX',
+    // Rede de segurança: reconcilia a caixa a cada N ms mesmo que o IDLE pare de
+    // notificar (socket zumbi). Barato — só busca de last_uid+1 e o dedupe ignora
+    // o que já existe. Limita a latência máxima de um email novo a esse intervalo.
+    pollIntervalMs: num('IMAP_POLL_INTERVAL_MS', 60_000),
   },
 
   smtp: {
@@ -51,4 +55,12 @@ export const config = {
 
   receiveEnabled: bool('RECEIVE_ENABLED', true),
   attachmentsBucket: process.env.ATTACHMENTS_BUCKET ?? 'email-attachments',
+
+  // Classificação de spam por IA (DeepSeek via edge openai-proxy). Roda só em
+  // emails recebidos novos e ambíguos (whitelist/blocklist decidem antes).
+  spamAi: {
+    enabled: bool('SPAM_AI_ENABLED', true),
+    // Endpoint do proxy de IA (failover DeepSeek->Groq->OpenAI).
+    proxyUrl: process.env.SPAM_AI_PROXY_URL ?? `${req('SUPABASE_URL')}/functions/v1/openai-proxy`,
+  },
 };
