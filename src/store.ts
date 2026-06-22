@@ -43,19 +43,25 @@ function addrList(a?: AddressObject | AddressObject[]): { name: string; address:
  * a tabela tem indice unico, entao reentregas do IMAP nao duplicam.
  * Retorna true se inseriu, false se ja existia.
  */
-export async function storeIncoming(parsed: ParsedMail, uid: number): Promise<boolean> {
-  const messageId = parsed.messageId ?? `no-id-${config.imap.mailbox}-${uid}`;
+export async function storeIncoming(
+  parsed: ParsedMail,
+  uid: number,
+  mailbox: string = config.imap.mailbox,
+  fromSpamFolder = false,
+): Promise<boolean> {
+  const messageId = parsed.messageId ?? `no-id-${mailbox}-${uid}`;
 
-  // dedupe explicito (alem do indice unico) para evitar reprocessar anexos
+  // Dedupe GLOBAL por message_id (não por pasta): quando o provedor move um
+  // e-mail entre pastas (ex.: Spam -> INBOX) a ponte o reveria em outra pasta e
+  // criaria uma 2ª cópia. Dedupando só por message_id, a 1ª gravação vence.
   const { data: existing } = await supabase
     .from('email_messages')
     .select('id')
-    .eq('mailbox', config.imap.mailbox)
     .eq('message_id', messageId)
-    .maybeSingle();
+    .limit(1);
 
-  if (existing) {
-    logger.debug({ messageId }, 'email ja existente, ignorando');
+  if (existing && existing.length > 0) {
+    logger.debug({ messageId, mailbox }, 'email ja existente, ignorando');
     return false;
   }
 
@@ -66,7 +72,7 @@ export async function storeIncoming(parsed: ParsedMail, uid: number): Promise<bo
   const attachmentsMeta: Array<Record<string, unknown>> = [];
   for (const att of parsed.attachments ?? []) {
     const safeName = (att.filename ?? 'anexo').replace(/[^\w.\-]/g, '_');
-    const path = `${config.imap.mailbox}/${encodeURIComponent(messageId)}/${safeName}`;
+    const path = `${mailbox}/${encodeURIComponent(messageId)}/${safeName}`;
     const { error: upErr } = await supabase.storage
       .from(config.attachmentsBucket)
       .upload(path, att.content, {
@@ -87,7 +93,7 @@ export async function storeIncoming(parsed: ParsedMail, uid: number): Promise<bo
 
   const row = {
     direction: 'inbound' as const,
-    mailbox: config.imap.mailbox,
+    mailbox,
     message_id: messageId,
     in_reply_to: parsed.inReplyTo ?? null,
     email_references: Array.isArray(parsed.references)
@@ -120,10 +126,30 @@ export async function storeIncoming(parsed: ParsedMail, uid: number): Promise<bo
     throw error;
   }
 
-  logger.info({ messageId, from: fromAddress, subject: row.subject }, 'email recebido gravado');
+  logger.info({ messageId, from: fromAddress, subject: row.subject, mailbox, fromSpamFolder }, 'email recebido gravado');
+
+  const isHard = HARD_REASON.test(inserted?.spam_reason ?? '');
+
+  // Veio da pasta de Spam/Junk DO SERVIDOR: espelha a classificação — marca como
+  // spam no CRM (a não ser que haja veredito duro, ex.: remetente na whitelist).
+  // Não roda IA: o provedor já decidiu, e re-classificar poderia "des-spammar".
+  if (fromSpamFolder && inserted && !isHard) {
+    const { error: upErr } = await supabase
+      .from('email_messages')
+      .update({
+        is_spam: true,
+        spam_score: 1,
+        spam_reason: 'Marcado como spam pelo servidor de e-mail',
+        spam_checked: true,
+      })
+      .eq('id', inserted.id);
+    if (upErr) logger.warn({ err: upErr, id: inserted.id }, 'spam-folder: falha ao marcar spam');
+    else logger.info({ id: inserted.id }, 'spam-folder: marcado como spam (espelho do servidor)');
+    return true;
+  }
 
   // Refino por IA (DeepSeek): só em casos ambíguos — whitelist/blocklist já decidem.
-  if (config.spamAi.enabled && inserted && !HARD_REASON.test(inserted.spam_reason ?? '')) {
+  if (config.spamAi.enabled && inserted && !isHard) {
     const auth = authSummary(authText(row.raw_headers as Record<string, unknown>));
     const verdict = await classifyWithAi({
       from: fromAddress,

@@ -33,6 +33,16 @@ export const config = {
     user: req('IMAP_USER'),
     password: req('IMAP_PASSWORD'),
     mailbox: process.env.IMAP_MAILBOX ?? 'INBOX',
+    // Além da INBOX, a ponte descobre e monitora a pasta de Spam/Junk do servidor
+    // (senão e-mails filtrados pelo provedor NUNCA chegam ao CRM até serem movidos
+    // manualmente). Pastas extras podem ser forçadas via IMAP_MAILBOXES (lista
+    // separada por vírgula). A Lixeira fica de fora por padrão (re-importaria
+    // e-mails apagados) — ligue com IMAP_INCLUDE_TRASH=true se quiser.
+    extraMailboxes: (process.env.IMAP_MAILBOXES ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    includeTrash: bool('IMAP_INCLUDE_TRASH', false),
     // Rede de segurança: reconcilia a caixa a cada N ms mesmo que o IDLE pare de
     // notificar (socket zumbi). Barato — só busca de last_uid+1 e o dedupe ignora
     // o que já existe. Limita a latência máxima de um email novo a esse intervalo.
