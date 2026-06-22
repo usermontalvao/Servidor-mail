@@ -1,0 +1,42 @@
+# Stack para o Portainer (Stacks -> Add stack -> Git repository).
+# As variaveis abaixo sao preenchidas na tela "Environment variables" do Portainer
+# OU num arquivo .env ao lado deste compose. NUNCA commitar segredos.
+services:
+  email-bridge:
+    build: .
+    image: email-bridge:latest
+    container_name: email-bridge
+    restart: unless-stopped
+    ports:
+      # Porta HTTP interna para o CRM/edge function chamar o envio de email.
+      # Exponha so na rede interna / atras de proxy. Ajuste conforme necessario.
+      - "8080:8080"
+    environment:
+      # --- HTTP / seguranca da API de envio ---
+      PORT: 8080
+      BRIDGE_API_TOKEN: ${BRIDGE_API_TOKEN}
+
+      # --- IMAP (recebimento) ---
+      IMAP_HOST: ${IMAP_HOST}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_SECURE: ${IMAP_SECURE:-true}
+      IMAP_USER: ${IMAP_USER}
+      IMAP_PASSWORD: ${IMAP_PASSWORD}
+      IMAP_MAILBOX: ${IMAP_MAILBOX:-INBOX}
+
+      # --- SMTP (envio) ---
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_SECURE: ${SMTP_SECURE:-true}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_FROM: ${SMTP_FROM}
+
+      # --- Supabase (service role: somente no servidor, nunca no front) ---
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+
+      # --- comportamento ---
+      RECEIVE_ENABLED: ${RECEIVE_ENABLED:-true}
+      ATTACHMENTS_BUCKET: ${ATTACHMENTS_BUCKET:-email-attachments}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
