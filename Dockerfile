@@ -1,5 +1,6 @@
 # --- build stage ---
-FROM node:20-alpine AS build
+# Node 22: traz WebSocket nativo, exigido pelo @supabase/realtime-js.
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
@@ -8,7 +9,7 @@ COPY src ./src
 RUN npm run build
 
 # --- runtime stage ---
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
